@@ -32,6 +32,18 @@ PRIORITIES = {
     "low": "منخفضة"
 }
 
+PRIORITY_ORDER = {
+    "high": 0,
+    "medium": 1,
+    "low": 2
+}
+
+PRIORITY_COLORS = {
+    "high": "#F4B6B6",
+    "medium": "#F5D98E",
+    "low": "#B8DCC1"
+}
+
 COLUMNS = [
     "task_id",
     "task_name",
@@ -192,6 +204,70 @@ def show_duration(value):
         parts.append(f"{total % 60} دقيقة")
 
     return " و ".join(parts) if parts else "0 دقيقة"
+
+
+def get_due_date(value):
+    due = pd.to_datetime(value, errors="coerce")
+
+    if pd.isna(due):
+        return pd.NaT
+
+    if due.tzinfo is not None:
+        due = due.tz_convert("Asia/Riyadh").tz_localize(None)
+
+    return due
+
+
+def sort_tasks_by_priority(data):
+    result = data.copy()
+
+    result["_priority_order"] = (
+        result["priority"]
+        .map(PRIORITY_ORDER)
+        .fillna(3)
+    )
+
+    result["_due_sort"] = result["due_date"].apply(
+        lambda value: get_due_date(value)
+    )
+
+    result = result.sort_values(
+        by=["_priority_order", "_due_sort"],
+        ascending=[True, True],
+        na_position="last"
+    )
+
+    return result.drop(
+        columns=["_priority_order", "_due_sort"]
+    )
+
+
+def show_priority_color(priority):
+    color = PRIORITY_COLORS.get(
+        priority,
+        "#D9CCB8"
+    )
+
+    name = PRIORITIES.get(
+        priority,
+        "غير محددة"
+    )
+
+    st.markdown(
+        f"""
+        <div style="
+            background-color:{color};
+            color:#192B49;
+            padding:8px 12px;
+            border-radius:8px;
+            font-weight:bold;
+            margin-bottom:10px;
+        ">
+            أولوية المهمة: {name}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 
 def get_current_user():
@@ -621,8 +697,7 @@ def prepare_analysis_data(data):
 tasks = load_tasks()
 
 if st.session_state.pop("task_added", False):
-    st.success("تمت إضافة المهمة بنجاح 💙")
-
+    st.toast("تم إضافة المهمة بنجاح 💙", icon="✅")
 
 active_tasks = tasks[
     tasks["deleted_date"].astype(str).eq("")
@@ -673,10 +748,13 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+
 page = st.sidebar.radio(
     "القائمة الرئيسية",
     [
         "مهامي",
+        "مهامك القريبة",
+        "مهامي في جدول",
         "المهام المكتملة",
         "إضافة مهمة",
         "سلة المحذوفات",
@@ -686,7 +764,7 @@ page = st.sidebar.radio(
 )
 
 st.sidebar.divider()
-st.sidebar.write(f"عُد مجدداً")
+st.sidebar.write("عُد مجدداً")
 
 if st.sidebar.button(
     "تسجيل الخروج",
@@ -694,6 +772,10 @@ if st.sidebar.button(
 ):
     logout()
 
+
+# ==================================================
+# مهامي
+# ==================================================
 
 if page == "مهامي":
 
@@ -712,54 +794,6 @@ if page == "مهامي":
 
     st.divider()
 
-    st.subheader("🔔 تنبيهات المهام")
-
-    pending_tasks = active_tasks[
-        active_tasks["status"] == "incomplete"
-    ].copy()
-
-    now = pd.Timestamp.now(tz="Asia/Riyadh").tz_localize(None)
-
-    overdue_tasks = []
-    today_tasks = []
-    upcoming_tasks = []
-
-    for _, task in pending_tasks.iterrows():
-        due = pd.to_datetime(task["due_date"], errors="coerce")
-
-        if pd.isna(due):
-            continue
-
-        if due.tzinfo is not None:
-            due = due.tz_convert("Asia/Riyadh").tz_localize(None)
-
-        if due < now and due.date() < now.date():
-            overdue_tasks.append(task["task_name"])
-        elif due.date() == now.date():
-            today_tasks.append(task["task_name"])
-        elif now < due <= now + pd.Timedelta(days=1):
-            upcoming_tasks.append(task["task_name"])
-
-    if overdue_tasks:
-        st.error("🔴 انتهى موعد هذه المهام:")
-        for name in overdue_tasks:
-            st.write(f"• {name}")
-
-    if today_tasks:
-        st.warning("🟡 موعد هذه المهام اليوم:")
-        for name in today_tasks:
-            st.write(f"• {name}")
-
-    if upcoming_tasks:
-        st.info("🔵 اقترب موعد هذه المهام (خلال 24 ساعة):")
-        for name in upcoming_tasks:
-            st.write(f"• {name}")
-
-    if not overdue_tasks and not today_tasks and not upcoming_tasks:
-        st.success("💚 ما عندك مهام متأخرة أو قريبة من موعدها!")
-    
-    st.divider()
-
     search = st.text_input("ابحث عن مهمة")
 
     filter_category = st.selectbox(
@@ -769,7 +803,9 @@ if page == "مهامي":
         "الكل" if x == "الكل" else CATEGORIES[x]
     )
 
-    displayed = incomplete_tasks.copy()
+    displayed = sort_tasks_by_priority(
+        incomplete_tasks
+    )
 
     if search:
         displayed = displayed[
@@ -796,6 +832,8 @@ if page == "مهامي":
 
         with st.container(border=True):
 
+            show_priority_color(task["priority"])
+
             st.subheader(str(task["task_name"]))
 
             st.write(
@@ -806,9 +844,8 @@ if page == "مهامي":
                 f"الأولوية: {PRIORITIES.get(task['priority'], task['priority'])}"
             )
 
-            parsed_due_date = pd.to_datetime(
-                task["due_date"],
-                errors="coerce"
+            parsed_due_date = get_due_date(
+                task["due_date"]
             )
 
             due_date_display = (
@@ -957,6 +994,207 @@ if page == "مهامي":
                 st.rerun()
 
 
+# ==================================================
+# مهامك القريبة
+# ==================================================
+
+elif page == "مهامك القريبة":
+
+    st.header("🔔 مهامك القريبة")
+
+    st.caption(
+        "تابع المهام المتأخرة ومهام اليوم والمهام القادمة."
+    )
+
+    today = date.today()
+
+    overdue_list = []
+    today_list = []
+    upcoming_list = []
+
+    for _, task in incomplete_tasks.iterrows():
+
+        due = get_due_date(task["due_date"])
+
+        if pd.isna(due):
+            continue
+
+        due_day = due.date()
+
+        if due_day < today:
+            overdue_list.append(task)
+
+        elif due_day == today:
+            today_list.append(task)
+
+        elif today < due_day <= today + pd.Timedelta(days=7):
+            upcoming_list.append(task)
+
+    def show_reminder_tasks(task_list, empty_message):
+
+        if not task_list:
+            st.success(empty_message)
+            return
+
+        sorted_list = sort_tasks_by_priority(
+            pd.DataFrame(task_list)
+        )
+
+        for _, task in sorted_list.iterrows():
+
+            task_id = int(task["task_id"])
+
+            with st.container(border=True):
+
+                show_priority_color(task["priority"])
+
+                st.subheader(str(task["task_name"]))
+
+                st.write(
+                    f"تاريخ الاستحقاق: {get_due_date(task['due_date']).strftime('%Y-%m-%d')}"
+                )
+
+                st.write(
+                    f"الأولوية: {PRIORITIES.get(task['priority'], task['priority'])}"
+                )
+
+                st.write(
+                    f"التصنيف: {CATEGORIES.get(task['category'], task['category'])}"
+                )
+
+                st.write(
+                    f"المدة المتوقعة: {show_duration(task['estimated_minutes'])}"
+                )
+
+                if st.button(
+                    "تم إنجاز المهمة ✓",
+                    key=f"reminder_complete_{task_id}"
+                ):
+
+                    update_task(
+                        task_id,
+                        {
+                            "status": "complete",
+                            "completed_date": datetime.now().isoformat()
+                        }
+                    )
+
+                    st.rerun()
+
+    st.subheader("🔴 المهام المتأخرة")
+    show_reminder_tasks(
+        overdue_list,
+        "ما عندك مهام متأخرة 💚"
+    )
+
+    st.divider()
+
+    st.subheader("🟡 مهام اليوم")
+    show_reminder_tasks(
+        today_list,
+        "ما عندك مهام مستحقة اليوم."
+    )
+
+    st.divider()
+
+    st.subheader("🔵 المهام القادمة")
+    show_reminder_tasks(
+        upcoming_list,
+        "ما عندك مهام قادمة خلال الأيام السبعة المقبلة."
+    )
+
+
+# ==================================================
+# مهامي في جدول
+# ==================================================
+
+elif page == "مهامي في جدول":
+
+    st.header("📅 مهامي في جدول")
+
+    st.caption(
+        "عرض زمني لجميع مهامك غير المكتملة حسب تاريخ الاستحقاق."
+    )
+
+    table_tasks = incomplete_tasks.copy()
+
+    if table_tasks.empty:
+
+        st.info("ما عندك مهام غير مكتملة لعرضها في الجدول.")
+
+    else:
+
+        table_tasks["_parsed_due"] = table_tasks[
+            "due_date"
+        ].apply(get_due_date)
+
+        table_tasks = table_tasks.sort_values(
+            by="_parsed_due",
+            ascending=True,
+            na_position="last"
+        )
+
+        table_data = pd.DataFrame({
+            "تاريخ الاستحقاق": table_tasks["_parsed_due"].apply(
+                lambda x: x.strftime("%Y-%m-%d")
+                if pd.notna(x)
+                else "غير محدد"
+            ),
+            "اسم المهمة": table_tasks["task_name"].astype(str),
+            "الأولوية": table_tasks["priority"].map(PRIORITIES).fillna("غير محددة"),
+            "التصنيف": table_tasks["category"].map(CATEGORIES).fillna("غير محدد"),
+            "المدة المتوقعة": table_tasks["estimated_minutes"].apply(show_duration),
+            "الحالة": "غير مكتملة"
+        })
+
+        st.dataframe(
+            table_data,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.divider()
+
+        st.subheader("المهام حسب اليوم")
+
+        for due_day, group in table_tasks.groupby(
+            table_tasks["_parsed_due"].dt.date,
+            dropna=False,
+            sort=True
+        ):
+
+            if pd.isna(due_day):
+                heading = "بدون تاريخ استحقاق"
+            else:
+                heading = due_day.strftime("%Y-%m-%d")
+
+            with st.expander(
+                f"📅 {heading} — {len(group)} مهمة"
+            ):
+
+                for _, task in sort_tasks_by_priority(group).iterrows():
+
+                    show_priority_color(task["priority"])
+
+                    st.write(
+                        f"**{task['task_name']}**"
+                    )
+
+                    st.write(
+                        f"الأولوية: {PRIORITIES.get(task['priority'], task['priority'])}"
+                    )
+
+                    st.write(
+                        f"المدة: {show_duration(task['estimated_minutes'])}"
+                    )
+
+                    st.divider()
+
+
+# ==================================================
+# المهام المكتملة
+# ==================================================
+
 elif page == "المهام المكتملة":
 
     st.header("المهام المكتملة 💙")
@@ -978,6 +1216,8 @@ elif page == "المهام المكتملة":
             task_id = int(task["task_id"])
 
             with st.container(border=True):
+
+                show_priority_color(task["priority"])
 
                 st.subheader(str(task["task_name"]))
 
@@ -1022,6 +1262,10 @@ elif page == "المهام المكتملة":
 
                     st.rerun()
 
+
+# ==================================================
+# إضافة مهمة
+# ==================================================
 
 elif page == "إضافة مهمة":
 
@@ -1103,13 +1347,19 @@ elif page == "إضافة مهمة":
 
             try:
                 add_task(new_task)
+
                 st.session_state["task_added"] = True
+
                 st.rerun()
 
             except Exception as e:
                 st.error("تعذر حفظ المهمة. حاول مرة أخرى.")
                 st.exception(e)
 
+
+# ==================================================
+# سلة المحذوفات
+# ==================================================
 
 elif page == "سلة المحذوفات":
 
@@ -1151,6 +1401,10 @@ elif page == "سلة المحذوفات":
                     delete_task_permanently(task_id)
                     st.rerun()
 
+
+# ==================================================
+# تحليل البيانات
+# ==================================================
 
 elif page == "تحليل البيانات":
 
@@ -1253,6 +1507,10 @@ elif page == "تحليل البيانات":
             st.subheader("أيام تسجيل الإنجاز")
             st.bar_chart(daily)
 
+
+# ==================================================
+# التوقعات والتوصيات
+# ==================================================
 
 elif page == "التوقعات والتوصيات":
 
